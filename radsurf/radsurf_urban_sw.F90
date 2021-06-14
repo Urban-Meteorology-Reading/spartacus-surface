@@ -62,7 +62,7 @@ contains
 #ifdef PRINT_ARRAYS
     use print_matrix_mod
 #endif
-    
+
     implicit none
 
     ! --------------------------------------------------------
@@ -153,6 +153,10 @@ contains
     ! excluding tangent term
     real(kind=jprb) :: f_wall(nreg,nlay)
 
+    ! Rate of interception of direct radiation by walls treating all
+    ! non-building regions as "clear"
+    real(kind=jprb) :: f_wall_dir_clear(nlay)
+
     ! Fraction of energy intercepting a wall that is absorbed and
     ! extinguished
     real(kind=jprb) :: wall_abs(nsw), wall_ext(nsw), wall_factor(nsw)
@@ -222,6 +226,21 @@ contains
     ! Index to layer inside canopy_flux object
     integer(kind=jpim) :: ilay
 
+    ! Index to the most transparent spectral interval
+    integer(kind=jpim) :: itransp
+
+    ! Direct downward flux in clear sky (no vegetation or buildings),
+    ! transmittance of clear layer to direct radiation, integrated
+    ! direct flux across a layer if clear, and absorbed direct
+    ! radiation by vegetation in the absence of attenuation.  All are
+    ! in the most transparent spectral interval.
+    real(kind=jprb) :: flux_dn_dir_clear, trans_dir_clear
+    real(kind=jprb) :: int_flux_dir_clear, veg_abs_dir_clear
+
+    ! Area of exposed roof at top of each layer normalized by domain
+    ! area
+    real(kind=jprb) :: roof_fraction(nlay+1), non_building_fraction(nlay+1)
+
     ! Index to the matrix dimension expressing regions "from" and "to"
     ! in combination with a particular stream
     integer(kind=jpim) :: ifr, ito
@@ -273,6 +292,13 @@ contains
              &  - frac(1,1:nlay),1,nreg-1) / real(nreg-1,jprb)
         frac(2:,nlay+1) = 0.0_jprb
       end if
+      ! Define the roof fraction at the top of each layer
+      roof_fraction(nlay+1)   = 0.0_jprb
+      roof_fraction(nlay)     = building_fraction(nlay)
+      roof_fraction(1:nlay-1) = max(0.0_jprb, building_fraction(1:nlay-1) &
+           &                                 -building_fraction(2:nlay))
+      non_building_fraction(nlay+1) = 1.0_jprb
+      non_building_fraction(1:nlay) = 1.0_jprb - building_fraction
 
 #ifdef PRINT_ARRAYS
       call print_vector('veg_fraction',canopy_props%veg_fraction(ilay1:ilay2))
@@ -280,6 +306,11 @@ contains
       call print_vector('veg_scale', canopy_props%veg_scale(ilay1:ilay2));
       call print_matrix('frac', frac);
 #endif
+
+      ! Find the spectral interval that is most transparent by
+      ! computing the optical depth of the entire canopy in each
+      ! interval
+      itransp = minloc(sum(air_ext*spread(dz,1,nsw),2),1)
 
       ! Compute overlap matrices
       call calc_overlap_matrices_urban(nlay,nreg,frac,u_overlap,v_overlap, &
@@ -385,6 +416,7 @@ contains
         ! Compute the normalized length of the interface between each
         ! region and a building wall
         norm_perim_wall = 0.0_jprb
+
         if (building_fraction(jlay) > config%min_building_fraction) then
           norm_perim_wall(1) = 4.0_jprb * building_fraction(jlay) / building_scale(jlay)
 
@@ -393,7 +425,6 @@ contains
             if (veg_contact_fraction(jlay) > 0.0_jprb) then
               ! Compute normalized length of interface between wall
               ! and any vegetation
-              !
               norm_perim_wall_veg = min(norm_perim_air_veg*veg_contact_fraction(jlay), &
                    &                    norm_perim_wall(1))
               if (nreg == 2) then
@@ -451,6 +482,13 @@ contains
             f_wall(jreg,jlay) = norm_perim_wall(jreg) / (Pi * frac(jreg,jlay))
           end if
         end do
+
+        if (non_building_fraction(jlay) <= config%min_building_fraction) then
+          f_wall_dir_clear(jlay) = 0.0_jprb
+        else
+          f_wall_dir_clear(jlay) = sum(norm_perim_wall(1:nreg)) &
+               &  / (Pi * non_building_fraction(jlay))
+        end if
 
         ! Compute fraction of intercepted radiation extinguished
         ! (absorption + scattering) and absorbed by wall
@@ -547,7 +585,7 @@ contains
         call print_matrix('gamma1',gamma1(1,:,:))
         call print_matrix('gamma2',gamma2(1,:,:))
         call print_matrix('gamma3',gamma3(1,:,:))
-#endif        
+#endif
 
         ! --------------------------------------------------------
         ! Section 3c: Compute reflection/transmission matrices for this layer
@@ -673,6 +711,10 @@ contains
       sw_norm_dir%top_net(:,icol)    = sw_norm_dir%top_dn_dir(:,icol) &
            &                         * (1.0_jprb-top_albedo_dir)
 
+      ! Uppermost roof is entirely sunlit
+      sw_norm_dir%roof_sunlit_frac(ilay2) = 1.0_jprb
+      flux_dn_dir_clear = 1.0_jprb / zcos_sza
+
       ! Loop down through layers
       do jlay = nlay,1,-1
         ! Find index into output arrays
@@ -688,7 +730,8 @@ contains
              &  + rect_mat_x_vec(nsw,(nreg+1)*ns,nreg+1,d_below(:,:,:,jlay+1),flux_dn_dir_below)
 
         ! Store the fluxes into the exposed roof
-        sw_norm_dir%roof_in(:,ilay) = zcos_sza * flux_dn_dir_below(:,nreg+1) &
+        sw_norm_dir%roof_in_dir(:,ilay) = zcos_sza * flux_dn_dir_below(:,nreg+1)
+        sw_norm_dir%roof_in(:,ilay) = sw_norm_dir%roof_in_dir(:,ilay) &
              &  + sum(flux_dn_diff_below(:,nreg*ns+1:(nreg+1)*ns),2)
         sw_norm_dir%roof_net(:,ilay) = sw_norm_dir%roof_in(:,ilay) &
              &  - sum(flux_up_below(:,nreg*ns+1:(nreg+1)*ns),2)
@@ -707,6 +750,22 @@ contains
         flux_up_above = mat_x_vec(nsw,nsw,nreg*ns,a_above(:,:,:,jlay), &
              &  flux_dn_diff_above) + flux_reflected_dir
 
+        if (allocated(sw_norm_dir%flux_dn_layer_top)) then
+          ! Store fluxes at top of layer (just below the upper
+          ! interface), summing over all regions except the last (the
+          ! roof)
+          sw_norm_dir%flux_dn_dir_layer_top(:,ilay) = zcos_sza * sum(flux_dn_dir_below(:,1:nreg),2)
+          sw_norm_dir%flux_dn_layer_top(:,ilay) = sw_norm_dir%flux_dn_dir_layer_top(:,ilay) &
+               &  + sum(flux_dn_diff_below(:,1:nreg*ns),2)
+          sw_norm_dir%flux_up_layer_top(:,ilay) = sum(flux_up_below(:,1:nreg*ns),2)
+          ! Store fluxes at base of layer (just above the lower
+          ! interface), summing over all regions (no roof)
+          sw_norm_dir%flux_dn_dir_layer_base(:,ilay) = zcos_sza * sum(flux_dn_dir_above,2)
+          sw_norm_dir%flux_dn_layer_base(:,ilay) = sw_norm_dir%flux_dn_dir_layer_base(:,ilay) &
+               &  + sum(flux_dn_diff_above,2)
+          sw_norm_dir%flux_up_layer_base(:,ilay) = sum(flux_up_above,2)
+        end if
+
         ! Compute integrated flux vectors, recalling that _above means
         ! above the just above the *base* of the layer, and _below
         ! means just below the *top* of the layer
@@ -723,8 +782,8 @@ contains
              &    * (int_flux_dir(:,1) & ! / zcos_sza &
              &       + sum(int_flux_diff(:,1:ns) * spread(1.0_jprb/lg%mu,nsw,1), 2))
         if (do_vegetation) then
-           associate (veg_ext => canopy_props%veg_ext(ilay1:ilay2), &
-             &        veg_ssa => sw_spectral_props%veg_ssa(:,ilay1:ilay2) )
+          associate (veg_ext => canopy_props%veg_ext(ilay1:ilay2), &
+               &        veg_ssa => sw_spectral_props%veg_ssa(:,ilay1:ilay2) )
           do jreg = 2,nreg
             ! Absorption by clear-air in the vegetated regions
             sw_norm_dir%veg_air_abs(:,ilay) = sw_norm_dir%veg_air_abs(:,ilay) &
@@ -732,6 +791,9 @@ contains
                  &    * (int_flux_dir(:,jreg) & ! / zcos_sza &
                  &       + sum(int_flux_diff(:,(jreg-1)*ns+1:jreg*ns) &
                  &             * spread(1.0_jprb/lg%mu,nsw,1), 2))
+            sw_norm_dir%veg_abs_dir(:,ilay) = sw_norm_dir%veg_abs_dir(:,ilay) &
+                 &  + veg_ext(jlay)*(1.0_jprb-veg_ssa(:,jlay)) & ! Use vegetation properties
+                 &    * int_flux_dir(:,jreg) * od_scaling(jreg,jlay)
             sw_norm_dir%veg_abs(:,ilay) = sw_norm_dir%veg_abs(:,ilay) &
                  &  + veg_ext(jlay)*(1.0_jprb-veg_ssa(:,jlay)) & ! Use vegetation properties
                  &    * (int_flux_dir(:,jreg) & ! / zcos_sza &
@@ -743,14 +805,63 @@ contains
 
         ! Inward and net flux into walls
         do jreg = 1,nreg
+          sw_norm_dir%wall_in_dir(:,ilay) = sw_norm_dir%wall_in_dir(:,ilay) &
+               &  + f_wall(jreg,jlay) * sin0 * int_flux_dir(:,jreg)
+        end do
+        sw_norm_dir%wall_in(:,ilay) = sw_norm_dir%wall_in_dir(:,ilay) 
+        do jreg = 1,nreg
           sw_norm_dir%wall_in(:,ilay) = sw_norm_dir%wall_in(:,ilay) &
-               &  + f_wall(jreg,jlay) &
-               &  * (sin0 * int_flux_dir(:,jreg) &
-               &     + sum(int_flux_diff(:,(jreg-1)*ns+1:jreg*ns) &
-               &           * spread(lg%tan_ang,1,nsw)))
+               &  + f_wall(jreg,jlay) * sum(int_flux_diff(:,(jreg-1)*ns+1:jreg*ns) &
+               &                      * spread(lg%tan_ang,1,nsw))
         end do
         sw_norm_dir%wall_net(:,ilay) = sw_norm_dir%wall_in(:,ilay) &
              &  * (1.0_jprb - wall_albedo(:,jlay))
+
+        ! Fraction of roof in sunlight
+        sw_norm_dir%roof_sunlit_frac(ilay) = sw_norm_dir%roof_in_dir(itransp,ilay) &
+             &  * non_building_fraction(jlay+1) / (zcos_sza * flux_dn_dir_clear &
+             &     * max(config%min_building_fraction, roof_fraction(jlay)))
+
+        ! Scale clear-sky flux to account for any reduction in clear
+        ! area
+        flux_dn_dir_clear = flux_dn_dir_clear &
+             &            * non_building_fraction(jlay) / non_building_fraction(jlay+1)
+
+        ! Compute sunlit of walls and vegetation fraction. First the
+        ! layer transmittance in the absence of vegetation and other
+        ! buildings.
+        trans_dir_clear = exp(-air_ext(itransp,jlay)*dz(jlay)/zcos_sza)
+        ! Then the integrated direct flux
+        if (air_ext(itransp,jlay) > 0.0_jprb) then
+          int_flux_dir_clear = flux_dn_dir_clear * (1.0_jprb-trans_dir_clear) &
+               &  * zcos_sza / air_ext(itransp,jlay)
+        else
+          int_flux_dir_clear = flux_dn_dir_clear * dz(jlay)
+        end if
+
+        if (do_vegetation) then
+          associate ( veg_fraction => canopy_props%veg_fraction(ilay1:ilay2), &
+               &      veg_ext => canopy_props%veg_ext(ilay1:ilay2), &
+               &      veg_ssa => sw_spectral_props%veg_ssa(:,ilay1:ilay2) )
+
+          ! Then the equivalent absorption if this radiation
+          ! illuminated the leaves
+          veg_abs_dir_clear = int_flux_dir_clear * veg_ext(jlay) &
+               &  * (1.0_jprb-veg_ssa(itransp,jlay)) * veg_fraction(jlay)
+          ! And take the ratio
+          sw_norm_dir%veg_sunlit_frac(ilay) = sw_norm_dir%veg_abs_dir(itransp,ilay) &
+               &  / max(epsilon(1.0_jprb), veg_abs_dir_clear)
+          end associate
+        end if
+
+        ! Wall sunlit fraction is the ratio of the actual direct flux
+        ! into the wall to what there would have been without
+        ! shadowing by vegetation and other buildings
+        sw_norm_dir%wall_sunlit_frac(ilay) = 0.5_jprb * sw_norm_dir%wall_in_dir(itransp,ilay) &
+             &  / max(epsilon(1.0_jprb), (f_wall_dir_clear(jlay) * sin0 * int_flux_dir_clear))
+
+        ! Transmission through the layer
+        flux_dn_dir_clear = flux_dn_dir_clear * trans_dir_clear
 
 #ifdef PRINT_ARRAYS
         print *, 'NORMALIZED FLUXES W.R.T. DIRECT INCOMING RADIATION AT LAYER ', jlay
@@ -761,7 +872,8 @@ contains
         call print_vector('  flux_up_above ', flux_up_above(1,:))
 #endif
 
-      end do
+      end do ! Loop down through layers
+
       sw_norm_dir%ground_dn_dir(:,icol) = zcos_sza * sum(flux_dn_dir_above,2)
       sw_norm_dir%ground_dn(:,icol) = sw_norm_dir%ground_dn_dir(:,icol) &
            &  + sum(flux_dn_diff_above,2)
@@ -775,7 +887,10 @@ contains
                &  + (flux_dn_diff_above(:,ifr) +flux_up_above(:,ifr)) * lg%tan_ang(js)/Pi
         end do
       end do
- 
+
+      sw_norm_dir%ground_sunlit_frac(icol) = sw_norm_dir%ground_dn_dir(itransp,icol) &
+           &  / (zcos_sza * flux_dn_dir_clear)
+
       ! Second the fluxes normalized by the diffuse downwelling flux
       ! at canopy top.
 
@@ -813,6 +928,18 @@ contains
              &  mat_x_vec(nsw,nsw,nreg*ns,trans_diff(:,:,:,jlay),flux_dn_diff_below(:,1:nreg*ns)))
         flux_up_above = mat_x_vec(nsw,nsw,nreg*ns,a_above(:,:,:,jlay), &
              &  flux_dn_diff_above)
+
+        if (allocated(sw_norm_diff%flux_dn_layer_top)) then
+          ! Store fluxes at top of layer (just below the upper
+          ! interface), summing over all regions except the last (the
+          ! roof)
+          sw_norm_diff%flux_dn_layer_top(:,ilay) = sum(flux_dn_diff_below(:,1:nreg*ns),2)
+          sw_norm_diff%flux_up_layer_top(:,ilay) = sum(flux_up_below(:,1:nreg*ns),2)
+          ! Store fluxes at base of layer (just above the lower
+          ! interface), summing over all regions (no roof)
+          sw_norm_diff%flux_dn_layer_base(:,ilay) = sum(flux_dn_diff_above,2)
+          sw_norm_diff%flux_up_layer_base(:,ilay) = sum(flux_up_above,2)
+        end if
 
         ! Compute integrated flux vectors, recalling that _above means
         ! above the just above the *base* of the layer, and _below

@@ -655,7 +655,13 @@ contains
              &  + mat_x_vec(nlw,nlw,nreg*ns,a_above(:,:,:,jlay),source_lay(:,:,jlay))))
         ! Add the contribution from the exposed roofs
         if (jlay < nlay) then
-          exposed_roof_frac = building_fraction(jlay)-building_fraction(jlay+1)
+          ! Here and in radsurf_overlap we have to deal with the case
+          ! of overhanging buildings - this is done by configuring the
+          ! overlap matrices so that no upwelling radiation from the
+          ! layer below enters the "floor" of the overhanging
+          ! building, and also ensuring that the exposed roof fraction
+          ! cannot be negative
+          exposed_roof_frac = max(0.0_jprb,building_fraction(jlay)-building_fraction(jlay+1))
         else
           exposed_roof_frac = building_fraction(jlay)
         end if
@@ -739,6 +745,18 @@ contains
              &   + source_lay(:,:,jlay)))
         flux_up_above = mat_x_vec(nlw,nlw,nreg*ns,a_above(:,:,:,jlay),flux_dn_above) &
              &  + source_above(:,:,jlay)
+
+        if (allocated(lw_internal%flux_dn_layer_top)) then
+          ! Store fluxes at top of layer (just below the upper
+          ! interface), summing over all regions except the last (the
+          ! roof)
+          lw_internal%flux_dn_layer_top(:,ilay) = sum(flux_dn_below(:,1:nreg*ns),2)
+          lw_internal%flux_up_layer_top(:,ilay) = sum(flux_up_below(:,1:nreg*ns),2)
+          ! Store fluxes at base of layer (just above the lower
+          ! interface), summing over all regions (no roof)
+          lw_internal%flux_dn_layer_base(:,ilay) = sum(flux_dn_above,2)
+          lw_internal%flux_up_layer_base(:,ilay) = sum(flux_up_above,2)
+        end if
 
         ! Compute integrated flux vectors, recalling that _above means
         ! above the just above the *base* of the layer, and _below
@@ -835,6 +853,18 @@ contains
              &  mat_x_vec(nlw,nlw,nreg*ns,trans(:,:,:,jlay),flux_dn_below(:,1:nreg*ns)))
         flux_up_above = mat_x_vec(nlw,nlw,nreg*ns,a_above(:,:,:,jlay), &
              &  flux_dn_above)
+
+        if (allocated(lw_norm%flux_dn_layer_top)) then
+          ! Store fluxes at top of layer (just below the upper
+          ! interface), summing over all regions except the last (the
+          ! roof)
+          lw_norm%flux_dn_layer_top(:,ilay) = sum(flux_dn_below(:,1:nreg*ns),2)
+          lw_norm%flux_up_layer_top(:,ilay) = sum(flux_up_below(:,1:nreg*ns),2)
+          ! Store fluxes at base of layer (just above the lower
+          ! interface), summing over all regions (no roof)
+          lw_norm%flux_dn_layer_base(:,ilay) = sum(flux_dn_above,2)
+          lw_norm%flux_up_layer_base(:,ilay) = sum(flux_up_above,2)
+        end if
 
         ! Compute integrated flux vectors, recalling that _above means
         ! above the just above the *base* of the layer, and _below

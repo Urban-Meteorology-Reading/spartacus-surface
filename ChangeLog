@@ -7,6 +7,15 @@ version 0.7.2
 	- Added ground-level fluxes into a vertical plane
 	  (ground_flux_vertical_diffuse_sw and ground_flux_vertical_lw)
 	  needed to compute mean radiant temperature and comfort indices
+	- Namelist variable "do_save_flux_profile" saves additional flux
+	  profile variables
+	- Fixed radsurf_overlap and radsurf_urban_lw to treat overhanging
+	  buildings: no radiation is allowed to enter the base of the
+	  overhanging layer
+	- Store sunlit fractions on ground, roof and walls, along with
+	  direct radiation incident on these facets
+	- Store fraction of the one-sided leaf area that is in direct
+	  sunlight, and the direct radiation absorbed by leaves
 
 version 0.7.1 (23 October 2020)
 	- Added Apache license statement to each source file

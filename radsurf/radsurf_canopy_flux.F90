@@ -37,9 +37,16 @@ module radsurf_canopy_flux
     real(kind=jprb), allocatable :: top_dn_dir(:,:)    ! (nspec,ncol)
     real(kind=jprb), allocatable :: top_net(:,:)       ! (nspec,ncol)
     real(kind=jprb), allocatable :: roof_in(:,:)       ! (nspec,ntotlay)
+    real(kind=jprb), allocatable :: roof_in_dir(:,:)   ! (nspec,ntotlay)
     real(kind=jprb), allocatable :: roof_net(:,:)      ! (nspec,ntotlay)
     real(kind=jprb), allocatable :: wall_in(:,:)       ! (nspec,ntotlay)
+    real(kind=jprb), allocatable :: wall_in_dir(:,:)   ! (nspec,ntotlay)
     real(kind=jprb), allocatable :: wall_net(:,:)      ! (nspec,ntotlay)
+
+    ! Fraction of roof/wall/ground that is in direct sunlight
+    real(kind=jprb), allocatable :: roof_sunlit_frac(:)   ! (ntotlay)
+    real(kind=jprb), allocatable :: wall_sunlit_frac(:)   ! (ntotlay)
+    real(kind=jprb), allocatable :: ground_sunlit_frac(:) ! (ncol)
 
     ! Diffuse flux into a vertical surface at ground level, needed for
     ! calculating the mean radiant temperature felt by a human. Note
@@ -48,10 +55,15 @@ module radsurf_canopy_flux
     real(kind=jprb), allocatable :: ground_vertical_diff(:,:) ! (nspec,ncol)
 
     ! Absorption by the clear-air region, the vegetation in the
-    ! vegetated region, and the air in the vegetated region
+    ! vegetated region, and the air in the vegetated region; plus the
+    ! absorption of direct radiation by vegetation
     real(kind=jprb), allocatable :: clear_air_abs(:,:) ! (nspec,ntotlay)
     real(kind=jprb), allocatable :: veg_abs(:,:)       ! (nspec,ntotlay)
     real(kind=jprb), allocatable :: veg_air_abs(:,:)   ! (nspec,ntotlay)
+    real(kind=jprb), allocatable :: veg_abs_dir(:,:)   ! (nspec,ntotlay)
+
+    ! Fraction of leaves (or one-sided leaf area) in direct sunlight
+    real(kind=jprb), allocatable :: veg_sunlit_frac(:) ! (ntotlay)
 
     ! Optional: upward and downward fluxes at top and base of layers,
     ! summing the clear+vegetated regions. 
@@ -115,24 +127,39 @@ contains
     if (use_direct_local) then
       allocate(this%ground_dn_dir(nspec,ncol))
       allocate(this%top_dn_dir(nspec,ncol))
+      allocate(this%ground_sunlit_frac(ncol))
     end if
     if (config%do_urban) then
       allocate(this%roof_in(nspec,ntotlay))
       allocate(this%roof_net(nspec,ntotlay))
       allocate(this%wall_in(nspec,ntotlay))
       allocate(this%wall_net(nspec,ntotlay))
+      if (use_direct_local) then
+        allocate(this%roof_in_dir(nspec,ntotlay))
+        allocate(this%wall_in_dir(nspec,ntotlay))
+        allocate(this%roof_sunlit_frac(ntotlay))
+        allocate(this%wall_sunlit_frac(ntotlay))
+      end if
     end if
     allocate(this%clear_air_abs(nspec,ntotlay))
     if (config%do_vegetation) then
       allocate(this%veg_abs(nspec,ntotlay))
       allocate(this%veg_air_abs(nspec,ntotlay))
+      if (use_direct_local) then
+        allocate(this%veg_abs_dir(nspec,ntotlay))
+        allocate(this%veg_sunlit_frac(ntotlay))
+      end if
     end if
     if (do_save_flux_profile_local) then
       allocate(this%flux_dn_layer_top(nspec,ntotlay))
-      allocate(this%flux_dn_dir_layer_top(nspec,ntotlay))
+      if (use_direct_local) then
+        allocate(this%flux_dn_dir_layer_top(nspec,ntotlay))
+      end if
       allocate(this%flux_up_layer_top(nspec,ntotlay))
       allocate(this%flux_dn_layer_base(nspec,ntotlay))
-      allocate(this%flux_dn_dir_layer_base(nspec,ntotlay))
+      if (use_direct_local) then
+        allocate(this%flux_dn_dir_layer_base(nspec,ntotlay))
+      end if
       allocate(this%flux_up_layer_base(nspec,ntotlay))
     end if
 
@@ -150,17 +177,24 @@ contains
     if (allocated(this%ground_dn))        deallocate(this%ground_dn)
     if (allocated(this%ground_dn_dir))    deallocate(this%ground_dn_dir)
     if (allocated(this%ground_net))       deallocate(this%ground_net)
-    if (allocated(this%ground_vertical_diff))deallocate(this%ground_vertical_diff)
+    if (allocated(this%ground_vertical_diff)) deallocate(this%ground_vertical_diff)
+    if (allocated(this%ground_sunlit_frac))   deallocate(this%ground_sunlit_frac)
     if (allocated(this%top_dn))           deallocate(this%top_dn)
     if (allocated(this%top_dn_dir))       deallocate(this%top_dn_dir)
     if (allocated(this%top_net))          deallocate(this%top_net)
     if (allocated(this%roof_in))          deallocate(this%roof_in)
+    if (allocated(this%roof_in_dir))      deallocate(this%roof_in_dir)
     if (allocated(this%roof_net))         deallocate(this%roof_net)
     if (allocated(this%wall_in))          deallocate(this%wall_in)
+    if (allocated(this%wall_in_dir))      deallocate(this%wall_in_dir)
     if (allocated(this%wall_net))         deallocate(this%wall_net)
+    if (allocated(this%roof_sunlit_frac)) deallocate(this%roof_sunlit_frac)
+    if (allocated(this%wall_sunlit_frac)) deallocate(this%wall_sunlit_frac)
     if (allocated(this%clear_air_abs))    deallocate(this%clear_air_abs)
     if (allocated(this%veg_abs))          deallocate(this%veg_abs)
     if (allocated(this%veg_air_abs))      deallocate(this%veg_air_abs)
+    if (allocated(this%veg_abs_dir))      deallocate(this%veg_abs_dir)
+    if (allocated(this%veg_sunlit_frac))  deallocate(this%veg_sunlit_frac)
     if (allocated(this%flux_dn_layer_top))      deallocate(this%flux_dn_layer_top)
     if (allocated(this%flux_dn_dir_layer_top))  deallocate(this%flux_dn_dir_layer_top)
     if (allocated(this%flux_up_layer_top))      deallocate(this%flux_up_layer_top)
@@ -174,7 +208,7 @@ contains
   ! Typically the canopy_flux object initially contains normalized
   ! fluxes, e.g. for a top-of-canopy downwelling flux of unity.  Once
   ! the top-of-canopy downwelling flux is known, the canopy fluxes can
-  ! be scaled.
+  ! be scaled.  Note that the sunlit fractions are not scaled.
   subroutine scale_canopy_flux(this, nlay, factor)
 
     use radiation_io, only : nulerr, radiation_abort
@@ -220,6 +254,10 @@ contains
       this%wall_in  = factor(:,indcol) * this%wall_in
       this%wall_net = factor(:,indcol) * this%wall_net
     end if
+    if (allocated(this%roof_in_dir)) then
+      this%roof_in_dir = factor(:,indcol) * this%roof_in_dir
+      this%wall_in_dir = factor(:,indcol) * this%wall_in_dir
+    end if
     if (allocated(this%clear_air_abs)) then
       this%clear_air_abs = factor(:,indcol) * this%clear_air_abs
     end if
@@ -227,13 +265,18 @@ contains
       this%veg_abs     = factor(:,indcol) * this%veg_abs
       this%veg_air_abs = factor(:,indcol) * this%veg_air_abs
     end if
+    if (allocated(this%veg_abs_dir)) then
+      this%veg_abs_dir = factor(:,indcol) * this%veg_abs_dir
+    end if
     if (allocated(this%flux_dn_layer_top)) then
       this%flux_dn_layer_top      = factor(:,indcol) * this%flux_dn_layer_top
-      this%flux_dn_dir_layer_top  = factor(:,indcol) * this%flux_dn_dir_layer_top
       this%flux_up_layer_top      = factor(:,indcol) * this%flux_up_layer_top
       this%flux_dn_layer_base     = factor(:,indcol) * this%flux_dn_layer_base
-      this%flux_dn_dir_layer_base = factor(:,indcol) * this%flux_dn_dir_layer_base
       this%flux_up_layer_base     = factor(:,indcol) * this%flux_up_layer_base
+    end if
+    if (allocated(this%flux_dn_dir_layer_top)) then
+      this%flux_dn_dir_layer_top  = factor(:,indcol) * this%flux_dn_dir_layer_top
+      this%flux_dn_dir_layer_base = factor(:,indcol) * this%flux_dn_dir_layer_base
     end if
 
   end subroutine scale_canopy_flux
@@ -254,6 +297,7 @@ contains
     if (allocated(this%ground_dn_dir)) then
       this%ground_dn_dir(:,icol) = 0.0_jprb
       this%top_dn_dir(:,icol)    = 0.0_jprb
+      this%ground_sunlit_frac(icol) = 0.0_jprb
     end if
     if (present(ilay1) .and. present(ilay2)) then
       if (ilay2 >= ilay1) then
@@ -263,6 +307,12 @@ contains
           this%wall_in(:,ilay1:ilay2)  = 0.0_jprb
           this%wall_net(:,ilay1:ilay2) = 0.0_jprb
         end if
+        if (allocated(this%roof_in_dir)) then
+          this%roof_in_dir(:,ilay1:ilay2)  = 0.0_jprb
+          this%wall_in_dir(:,ilay1:ilay2)  = 0.0_jprb
+          this%roof_sunlit_frac(ilay1:ilay2) = 0.0_jprb
+          this%wall_sunlit_frac(ilay1:ilay2) = 0.0_jprb
+        end if
         if (allocated(this%clear_air_abs)) then
           this%clear_air_abs(:,ilay1:ilay2) = 0.0_jprb
         end if
@@ -270,13 +320,20 @@ contains
           this%veg_abs(:,ilay1:ilay2)     = 0.0_jprb
           this%veg_air_abs(:,ilay1:ilay2) = 0.0_jprb
         end if
+        if (allocated(this%veg_abs_dir)) then
+          this%veg_abs_dir(:,ilay1:ilay2) = 0.0_jprb
+          this%veg_sunlit_frac(ilay1:ilay2) = 0.0_jprb
+        end if
+
         if (allocated(this%flux_dn_layer_top)) then
           this%flux_dn_layer_top(:,ilay1:ilay2)      = 0.0_jprb
-          this%flux_dn_dir_layer_top(:,ilay1:ilay2)  = 0.0_jprb
           this%flux_up_layer_top(:,ilay1:ilay2)      = 0.0_jprb
           this%flux_dn_layer_base(:,ilay1:ilay2)     = 0.0_jprb
-          this%flux_dn_dir_layer_base(:,ilay1:ilay2) = 0.0_jprb
           this%flux_up_layer_base(:,ilay1:ilay2)     = 0.0_jprb
+        end if
+        if (allocated(this%flux_dn_dir_layer_top)) then
+          this%flux_dn_dir_layer_top(:,ilay1:ilay2)  = 0.0_jprb
+          this%flux_dn_dir_layer_base(:,ilay1:ilay2) = 0.0_jprb
         end if
       end if
     end if
@@ -298,12 +355,19 @@ contains
     if (allocated(this%ground_dn_dir)) then
       this%ground_dn_dir = 0.0_jprb
       this%top_dn_dir    = 0.0_jprb
+      this%ground_sunlit_frac = 0.0_jprb
     end if
     if (allocated(this%roof_in)) then
       this%roof_in  = 0.0_jprb
       this%roof_net = 0.0_jprb
       this%wall_in  = 0.0_jprb
       this%wall_net = 0.0_jprb
+    end if
+    if (allocated(this%roof_in_dir)) then
+      this%roof_in_dir = 0.0_jprb
+      this%wall_in_dir = 0.0_jprb
+      this%roof_sunlit_frac = 0.0_jprb
+      this%wall_sunlit_frac = 0.0_jprb
     end if
     if (allocated(this%clear_air_abs)) then
       this%clear_air_abs = 0.0_jprb
@@ -312,13 +376,19 @@ contains
       this%veg_abs     = 0.0_jprb
       this%veg_air_abs = 0.0_jprb
     end if
+    if (allocated(this%veg_abs_dir)) then
+      this%veg_abs_dir = 0.0_jprb
+      this%veg_sunlit_frac = 0.0_jprb
+    end if
     if (allocated(this%flux_dn_layer_top)) then
       this%flux_dn_layer_top      = 0.0_jprb
-      this%flux_dn_dir_layer_top  = 0.0_jprb
       this%flux_up_layer_top      = 0.0_jprb
       this%flux_dn_layer_base     = 0.0_jprb
-      this%flux_dn_dir_layer_base = 0.0_jprb
       this%flux_up_layer_base     = 0.0_jprb
+    end if
+    if (allocated(this%flux_dn_dir_layer_top)) then
+      this%flux_dn_dir_layer_top  = 0.0_jprb
+      this%flux_dn_dir_layer_base = 0.0_jprb
     end if
 
   end subroutine zero_all_canopy_flux
@@ -350,6 +420,8 @@ contains
     if (use_direct) then
       this%ground_dn_dir = flux1%ground_dn_dir + flux2%ground_dn_dir
       this%top_dn_dir    = flux1%top_dn_dir + flux2%top_dn_dir
+      ! Note that one of summed terms here ought to be zero:
+      this%ground_sunlit_frac = flux1%ground_sunlit_frac + flux2%ground_sunlit_frac
     end if
     if (allocated(this%roof_in)) then
       this%roof_in = flux1%roof_in + flux2%roof_in
@@ -357,18 +429,32 @@ contains
       this%wall_in = flux1%wall_in + flux2%wall_in
       this%wall_net = flux1%wall_net + flux2%wall_net
     end if
+    if (allocated(this%roof_in_dir)) then
+      this%roof_in_dir = flux1%roof_in_dir + flux2%roof_in_dir
+      this%wall_in_dir = flux1%wall_in_dir + flux2%wall_in_dir
+      ! Note that one of summed terms here ought to be zero:
+      this%roof_sunlit_frac = flux1%roof_sunlit_frac + flux2%roof_sunlit_frac
+      this%wall_sunlit_frac = flux1%wall_sunlit_frac + flux2%wall_sunlit_frac
+    end if
     this%clear_air_abs = flux1%clear_air_abs + flux2%clear_air_abs
     if (allocated(this%veg_abs)) then
       this%veg_abs = flux1%veg_abs + flux2%veg_abs
       this%veg_air_abs = flux1%veg_air_abs + flux2%veg_air_abs
     end if
+    if (allocated(this%veg_abs_dir)) then
+      this%veg_abs_dir = flux1%veg_abs_dir + flux2%veg_abs_dir
+      ! Note that one of summed terms here ought to be zero:
+      this%veg_sunlit_frac = flux1%veg_sunlit_frac + flux2%veg_sunlit_frac
+    end if
     if (allocated(this%flux_dn_layer_top)) then
       this%flux_dn_layer_top      = flux1%flux_dn_layer_top + flux2%flux_dn_layer_top
-      this%flux_dn_dir_layer_top  = flux1%flux_dn_dir_layer_top + flux2%flux_dn_dir_layer_top
       this%flux_up_layer_top      = flux1%flux_up_layer_top + flux2%flux_up_layer_top
       this%flux_dn_layer_base     = flux1%flux_dn_layer_base + flux2%flux_dn_layer_base
-      this%flux_dn_dir_layer_base = flux1%flux_dn_dir_layer_base + flux2%flux_dn_dir_layer_base
       this%flux_up_layer_base     = flux1%flux_up_layer_base + flux2%flux_up_layer_base
+    end if
+    if (allocated(this%flux_dn_dir_layer_top)) then
+      this%flux_dn_dir_layer_top  = flux1%flux_dn_dir_layer_top + flux2%flux_dn_dir_layer_top
+      this%flux_dn_dir_layer_base = flux1%flux_dn_dir_layer_base + flux2%flux_dn_dir_layer_base
     end if
 
   end subroutine sum_canopy_flux
